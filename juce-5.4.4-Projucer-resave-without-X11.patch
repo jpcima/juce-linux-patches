@@ -1,0 +1,162 @@
+diff --git a/extras/Projucer/Source/Application/jucer_Application.cpp b/extras/Projucer/Source/Application/jucer_Application.cpp
+index 67f20243f..3e1ae594f 100644
+--- a/extras/Projucer/Source/Application/jucer_Application.cpp
++++ b/extras/Projucer/Source/Application/jucer_Application.cpp
+@@ -110,6 +110,8 @@ void ProjucerApplication::initialise (const String& commandLine)
+             return;
+         }
+ 
++        initialiseUiBasics();
++
+         rescanJUCEPathModules();
+         rescanUserPathModules();
+ 
+@@ -133,12 +135,16 @@ void ProjucerApplication::initialise (const String& commandLine)
+ 
+ void ProjucerApplication::initialiseBasics()
+ {
+-    LookAndFeel::setDefaultLookAndFeel (&lookAndFeel);
+-
+     settings.reset (new StoredSettings());
++}
++
++void ProjucerApplication::initialiseUiBasics()
++{
++    LookAndFeel::setDefaultLookAndFeel (&lookAndFeel);
+     ImageCache::setCacheTimeout (30 * 1000);
+     icons.reset (new Icons());
+-    tooltipWindow.setMillisecondsBeforeTipAppears (1200);
++    tooltipWindow.reset(new TooltipWindow);
++    tooltipWindow->setMillisecondsBeforeTipAppears (1200);
+ }
+ 
+ bool ProjucerApplication::initialiseLogger (const char* filePrefix)
+@@ -244,7 +250,8 @@ void ProjucerApplication::shutdown()
+     commandManager.reset();
+     settings.reset();
+ 
+-    LookAndFeel::setDefaultLookAndFeel (nullptr);
++    if (! isRunningCommandLine)
++        LookAndFeel::setDefaultLookAndFeel (nullptr);
+ 
+     // clean up after ourselves and delete any temp project files that may have
+     // been created from PIPs
+diff --git a/extras/Projucer/Source/Application/jucer_Application.h b/extras/Projucer/Source/Application/jucer_Application.h
+index 3552ef538..87cb56b4d 100644
+--- a/extras/Projucer/Source/Application/jucer_Application.h
++++ b/extras/Projucer/Source/Application/jucer_Application.h
+@@ -53,6 +53,7 @@ public:
+     //==============================================================================
+     void initialise (const String& commandLine) override;
+     void initialiseBasics();
++    void initialiseUiBasics();
+     bool initialiseLogger (const char* filePrefix);
+     void initialiseWindows (const String& commandLine);
+ 
+@@ -195,7 +196,7 @@ private:
+     //==============================================================================
+     void* server = nullptr;
+ 
+-    TooltipWindow tooltipWindow;
++    std::unique_ptr<TooltipWindow> tooltipWindow;
+ 
+     AvailableModuleList jucePathModuleList, userPathsModuleList;
+ 
+diff --git a/extras/Projucer/Source/Settings/jucer_AppearanceSettings.cpp b/extras/Projucer/Source/Settings/jucer_AppearanceSettings.cpp
+index 67a877750..7e21272a6 100644
+--- a/extras/Projucer/Source/Settings/jucer_AppearanceSettings.cpp
++++ b/extras/Projucer/Source/Settings/jucer_AppearanceSettings.cpp
+@@ -36,11 +36,8 @@ AppearanceSettings::AppearanceSettings (bool updateAppWhenChanged)
+     {
+         ProjucerLookAndFeel lf;
+ 
+-        CodeDocument doc;
+         CPlusPlusCodeTokeniser tokeniser;
+-        CodeEditorComponent editor (doc, &tokeniser);
+-
+-        CodeEditorComponent::ColourScheme cs (editor.getColourScheme());
++        CodeEditorComponent::ColourScheme cs (tokeniser.getDefaultColourScheme());
+ 
+         for (int i = cs.types.size(); --i >= 0;)
+         {
+diff --git a/modules/juce_gui_basics/desktop/juce_Desktop.cpp b/modules/juce_gui_basics/desktop/juce_Desktop.cpp
+index 3cfb54e6b..e4eeedd5b 100644
+--- a/modules/juce_gui_basics/desktop/juce_Desktop.cpp
++++ b/modules/juce_gui_basics/desktop/juce_Desktop.cpp
+@@ -55,6 +55,11 @@ Desktop& JUCE_CALLTYPE Desktop::getInstance()
+     return *instance;
+ }
+ 
++bool Desktop::isInstantiated()
++{
++    return instance != nullptr;
++}
++
+ Desktop* Desktop::instance = nullptr;
+ 
+ //==============================================================================
+diff --git a/modules/juce_gui_basics/desktop/juce_Desktop.h b/modules/juce_gui_basics/desktop/juce_Desktop.h
+index 41b375e1f..13fc13cba 100644
+--- a/modules/juce_gui_basics/desktop/juce_Desktop.h
++++ b/modules/juce_gui_basics/desktop/juce_Desktop.h
+@@ -62,6 +62,8 @@ public:
+     /** There's only one desktop object, and this method will return it. */
+     static Desktop& JUCE_CALLTYPE getInstance();
+ 
++    static bool isInstantiated();
++
+     //==============================================================================
+     /** Returns the mouse position.
+ 
+diff --git a/modules/juce_gui_extra/documents/juce_FileBasedDocument.cpp b/modules/juce_gui_extra/documents/juce_FileBasedDocument.cpp
+index 2edffd32c..a6d7cee44 100644
+--- a/modules/juce_gui_extra/documents/juce_FileBasedDocument.cpp
++++ b/modules/juce_gui_extra/documents/juce_FileBasedDocument.cpp
+@@ -72,7 +72,8 @@ void FileBasedDocument::setFile (const File& newFile)
+ //==============================================================================
+ Result FileBasedDocument::loadFrom (const File& newFile, const bool showMessageOnFailure)
+ {
+-    MouseCursor::showWaitCursor();
++    if (Desktop::isInstantiated())
++        MouseCursor::showWaitCursor();
+ 
+     const File oldFile (documentFile);
+     documentFile = newFile;
+@@ -86,7 +87,8 @@ Result FileBasedDocument::loadFrom (const File& newFile, const bool showMessageO
+         if (result.wasOk())
+         {
+             setChangedFlag (false);
+-            MouseCursor::hideWaitCursor();
++            if (Desktop::isInstantiated())
++                MouseCursor::hideWaitCursor();
+ 
+             setLastDocumentOpened (newFile);
+             return result;
+@@ -94,15 +96,19 @@ Result FileBasedDocument::loadFrom (const File& newFile, const bool showMessageO
+     }
+ 
+     documentFile = oldFile;
+-    MouseCursor::hideWaitCursor();
+ 
+-    if (showMessageOnFailure)
+-        AlertWindow::showMessageBoxAsync (AlertWindow::WarningIcon,
+-                                          TRANS("Failed to open file..."),
+-                                          TRANS("There was an error while trying to load the file: FLNM")
+-                                              .replace ("FLNM", "\n" + newFile.getFullPathName())
+-                                            + "\n\n"
+-                                            + result.getErrorMessage());
++    if (Desktop::isInstantiated())
++    {
++        MouseCursor::hideWaitCursor();
++
++        if (showMessageOnFailure)
++            AlertWindow::showMessageBoxAsync (AlertWindow::WarningIcon,
++                                              TRANS("Failed to open file..."),
++                                              TRANS("There was an error while trying to load the file: FLNM")
++                                                  .replace ("FLNM", "\n" + newFile.getFullPathName())
++                                                + "\n\n"
++                                                + result.getErrorMessage());
++    }
+ 
+     return result;
+ }
